@@ -1,5 +1,16 @@
 # Initially taken from Github's Python gitignore file
 
+# pretrained models
+pre_trained_model/
+ernie_base/
+kg_embed/
+
+# embedding files
+*.txt
+
+# but add requirements.txt
+!requirements.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
