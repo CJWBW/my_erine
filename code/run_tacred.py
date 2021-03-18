@@ -37,9 +37,17 @@ from knowledge_bert.modeling import BertForSequenceClassification
 from knowledge_bert.optimization import BertAdam
 from knowledge_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 
-logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                    datefmt = '%m/%d/%Y %H:%M:%S',
-                    level = logging.INFO)
+import pickle
+from pathlib import Path
+CODE_PATH = str(Path(__file__).parent)
+
+# do this instead of getting embed on the fly
+with open(CODE_PATH + '/embed.txt', 'rb') as f:
+    embed = pickle.load(f)
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                    datefmt='%m/%d/%Y %H:%M:%S',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -90,11 +98,12 @@ class DataProcessor(object):
     def get_labels(self):
         """Gets the list of labels for this data set."""
         raise NotImplementedError()
-    
+
     @classmethod
     def _read_json(cls, input_file):
         with open(input_file, "r", encoding='utf-8') as f:
             return json.loads(f.read())
+
 
 class TacredProcessor(DataProcessor):
     """Processor for the CoLA data set (GLUE version)."""
@@ -123,7 +132,7 @@ class TacredProcessor(DataProcessor):
             for x in line['ents']:
                 if x[1] == 1:
                     x[1] = 0
-                    #print(line['text'][x[1]:x[2]].encode("utf-8"))
+                    # print(line['text'][x[1]:x[2]].encode("utf-8"))
             text_a = (line['text'], line['ents'])
             label = line['label']
             examples.append(
@@ -133,9 +142,9 @@ class TacredProcessor(DataProcessor):
 
 def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer, threshold):
     """Loads a data file into a list of `InputBatch`s."""
-    
+
     label_list = sorted(label_list)
-    label_map = {label : i for i, label in enumerate(label_list)}
+    label_map = {label: i for i, label in enumerate(label_list)}
 
     entity2id = {}
     with open("kg_embed/entity2id.txt") as fin:
@@ -151,15 +160,17 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         h, t = example.text_a[1]
         h_name = ex_text_a[h[1]:h[2]]
         t_name = ex_text_a[t[1]:t[2]]
-        #ex_text_a = ex_text_a.replace(h_name, "# "+h_name+" #", 1)
-        #ex_text_a = ex_text_a.replace(t_name, "$ "+t_name+" $", 1)
+        # ex_text_a = ex_text_a.replace(h_name, "# "+h_name+" #", 1)
+        # ex_text_a = ex_text_a.replace(t_name, "$ "+t_name+" $", 1)
         # Add [HD] and [TL], which are "#" and "$" respectively.
         if h[1] < t[1]:
-            ex_text_a = ex_text_a[:h[1]] + "# "+h_name+" #" + ex_text_a[h[2]:t[1]] + "$ "+t_name+" $" + ex_text_a[t[2]:]
+            ex_text_a = ex_text_a[:h[1]] + "# " + h_name + " #" + ex_text_a[
+                                                                  h[2]:t[1]] + "$ " + t_name + " $" + ex_text_a[t[2]:]
         else:
-            ex_text_a = ex_text_a[:t[1]] + "$ "+t_name+" $" + ex_text_a[t[2]:h[1]] + "# "+h_name+" #" + ex_text_a[h[2]:]
+            ex_text_a = ex_text_a[:t[1]] + "$ " + t_name + " $" + ex_text_a[
+                                                                  t[2]:h[1]] + "# " + h_name + " #" + ex_text_a[h[2]:]
 
-        ent_pos = [x for x in example.text_b if x[-1]>threshold]
+        ent_pos = [x for x in example.text_b if x[-1] > threshold]
         for x in ent_pos:
             cnt = 0
             if x[1] > h[2]:
@@ -189,7 +200,8 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
 
         tokens_b = None
         if False:
-            tokens_b, entities_b = tokenizer.tokenize(example.text_b[0], [x for x in example.text_b[1] if x[-1]>threshold])
+            tokens_b, entities_b = tokenizer.tokenize(example.text_b[0],
+                                                      [x for x in example.text_b[1] if x[-1] > threshold])
             # Modifies `tokens_a` and `tokens_b` in place so that the total
             # length is less than the specified length.
             # Account for [CLS], [SEP], [SEP] with "- 3"
@@ -263,22 +275,22 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
             logger.info("*** Example ***")
             logger.info("guid: %s" % (example.guid))
             logger.info("tokens: %s" % " ".join(
-                    [str(x) for x in tokens]))
+                [str(x) for x in tokens]))
             logger.info("ents: %s" % " ".join(
-                    [str(x) for x in ents]))
+                [str(x) for x in ents]))
             logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
             logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
             logger.info(
-                    "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
+                "segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
             logger.info("label: %s (id = %d)" % (example.label, label_id))
 
         features.append(
-                InputFeatures(input_ids=input_ids,
-                              input_mask=input_mask,
-                              segment_ids=segment_ids,
-                              input_ent=input_ent,
-                              ent_mask=ent_mask,
-                              label_id=label_id))
+            InputFeatures(input_ids=input_ids,
+                          input_mask=input_mask,
+                          segment_ids=segment_ids,
+                          input_ent=input_ent,
+                          ent_mask=ent_mask,
+                          label_id=label_id))
     return features
 
 
@@ -300,14 +312,17 @@ def _truncate_seq_pair(tokens_a, tokens_b, ents_a, ents_b, max_length):
             tokens_b.pop()
             ents_b.pop()
 
+
 def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
     return np.sum(outputs == labels)
 
+
 def warmup_linear(x, warmup=0.002):
     if x < warmup:
-        return x/warmup
+        return x / warmup
     return 1.0
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -409,7 +424,7 @@ def main():
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
-                            args.gradient_accumulation_steps))
+            args.gradient_accumulation_steps))
 
     args.train_batch_size = int(args.train_batch_size / args.gradient_accumulation_steps)
 
@@ -426,7 +441,6 @@ def main():
         raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
     os.makedirs(args.output_dir, exist_ok=True)
 
-
     processor = processors()
     label_list = None
 
@@ -436,14 +450,15 @@ def main():
     num_train_steps = None
     train_examples, label_list = processor.get_train_examples(args.data_dir)
     num_labels = len(label_list)
-    
+
     num_train_steps = int(
         len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps * args.num_train_epochs)
 
     # Prepare model
     model, _ = BertForSequenceClassification.from_pretrained(args.ernie_model,
-              cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(args.local_rank),
-              num_labels = num_labels)
+                                                             cache_dir=PYTORCH_PRETRAINED_BERT_CACHE / 'distributed_{}'.format(
+                                                                 args.local_rank),
+                                                             num_labels=num_labels)
     if args.fp16:
         model.half()
     model.to(device)
@@ -451,7 +466,8 @@ def main():
         try:
             from apex.parallel import DistributedDataParallel as DDP
         except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+            raise ImportError(
+                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
         model = DDP(model)
     elif n_gpu > 1:
@@ -465,31 +481,38 @@ def main():
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
-        ]
+    ]
     t_total = num_train_steps
     if args.local_rank != -1:
         t_total = t_total // torch.distributed.get_world_size()
-    if args.fp16:
-        try:
-            from apex.optimizers import FP16_Optimizer
-            from apex.optimizers import FusedAdam
-        except ImportError:
-            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+    # if args.fp16:
+    #     try:
+    #         from apex.optimizers import FP16_Optimizer
+    #         from apex.optimizers import FusedAdam
+    #     except ImportError:
+    #         raise ImportError(
+    #             "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+    #
+    #     optimizer = FusedAdam(optimizer_grouped_parameters,
+    #                           lr=args.learning_rate,
+    #                           bias_correction=True,
+    #                           max_grad_norm=1.0)
+    #     if args.loss_scale == 0:
+    #         optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
+    #     else:
+    #         optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.loss_scale)
+    #
+    # else:
+    #     optimizer = BertAdam(optimizer_grouped_parameters,
+    #                          lr=args.learning_rate,
+    #                          warmup=args.warmup_proportion,
+    #                          t_total=t_total)
 
-        optimizer = FusedAdam(optimizer_grouped_parameters,
-                              lr=args.learning_rate,
-                              bias_correction=True,
-                              max_grad_norm=1.0)
-        if args.loss_scale == 0:
-            optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
-        else:
-            optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.loss_scale)
+    optimizer = BertAdam(optimizer_grouped_parameters,
+                         lr=args.learning_rate,
+                         warmup=args.warmup_proportion,
+                         t_total=t_total)
 
-    else:
-        optimizer = BertAdam(optimizer_grouped_parameters,
-                             lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=t_total)
     global_step = 0
     if args.do_train:
         train_features = convert_examples_to_features(
@@ -498,20 +521,20 @@ def main():
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_steps)
- 
-        vecs = []
-        vecs.append([0]*100)
-        with open("kg_embed/entity2vec.vec", 'r') as fin:
-            for line in fin:
-                vec = line.strip().split('\t')
-                vec = [float(x) for x in vec]
-                vecs.append(vec)
-        embed = torch.FloatTensor(vecs)
-        embed = torch.nn.Embedding.from_pretrained(embed)
-        #embed = torch.nn.Embedding(5041175, 100)
 
-        logger.info("Shape of entity embedding: "+str(embed.weight.size()))
-        del vecs
+        # vecs = []
+        # vecs.append([0]*100)
+        # with open("kg_embed/entity2vec.vec", 'r') as fin:
+        #     for line in fin:
+        #         vec = line.strip().split('\t')
+        #         vec = [float(x) for x in vec]
+        #         vecs.append(vec)
+        # embed = torch.FloatTensor(vecs)
+        # embed = torch.nn.Embedding.from_pretrained(embed)
+        # #embed = torch.nn.Embedding(5041175, 100)
+
+        logger.info("Shape of entity embedding: " + str(embed.weight.size()))
+        # del vecs
 
         # zeros = [0 for _ in range(args.max_seq_length)]
         # zeros_ent = [0 for _ in range(100)]
@@ -522,7 +545,8 @@ def main():
         all_label_ids = torch.tensor([f.label_id for f in train_features], dtype=torch.long)
         all_ent = torch.tensor([f.input_ent for f in train_features], dtype=torch.long)
         all_ent_masks = torch.tensor([f.ent_mask for f in train_features], dtype=torch.long)
-        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_ent, all_ent_masks, all_label_ids)
+        train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_ent, all_ent_masks,
+                                   all_label_ids)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
@@ -538,10 +562,10 @@ def main():
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
                 batch = tuple(t.to(device) if i != 3 else t for i, t in enumerate(batch))
                 input_ids, input_mask, segment_ids, input_ent, ent_mask, label_ids = batch
-                input_ent = embed(input_ent+1).to(device) # -1 -> 0
+                input_ent = embed(input_ent + 1).to(device)  # -1 -> 0
                 loss = model(input_ids, segment_ids, input_mask, input_ent.half(), ent_mask, label_ids)
                 if n_gpu > 1:
-                    loss = loss.mean() # mean() to average on multi-gpu.
+                    loss = loss.mean()  # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
 
@@ -556,7 +580,7 @@ def main():
                 nb_tr_steps += 1
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     # modify learning rate with special warm up BERT uses
-                    lr_this_step = args.learning_rate * warmup_linear(global_step/t_total, args.warmup_proportion)
+                    lr_this_step = args.learning_rate * warmup_linear(global_step / t_total, args.warmup_proportion)
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = lr_this_step
                     optimizer.step()
@@ -570,6 +594,7 @@ def main():
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
         output_model_file = os.path.join(args.output_dir, "pytorch_model.bin")
         torch.save(model_to_save.state_dict(), output_model_file)
+
 
 if __name__ == "__main__":
     main()

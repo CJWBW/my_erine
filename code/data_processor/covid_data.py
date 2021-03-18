@@ -1,66 +1,24 @@
 import pandas as pd
 from collections import Counter
 from pathlib import Path
-from torch.utils.data import Dataset, DataLoader
 import torch
 import tagme
-import pickle
+from torch.utils.data import TensorDataset, DataLoader
 
 KG_EMBED_PATH = str(Path(__file__).parent / "../kg_embed")
 ERNIE_BASE_PATH = str(Path(__file__).parent / "../ernie_base")
 
-with open('embed.txt', 'rb') as f:
-    embed = pickle.load(f)
 
+class InputFeatures(object):
+    """A single set of features of data."""
 
-# class CovidDataset(Dataset):
-#
-#     def __init__(self, statements, labels, tokenizer, max_len):
-#         self.statements = statements
-#         self.labels = labels
-#         self.tokenizer = tokenizer
-#         self.max_len = max_len
-#
-#     def __len__(self):
-#         return len(self.statements)
-#
-#     def __getitem__(self, item):
-#         statements = str(self.statements[item])
-#         labels = self.labels[item]
-#
-#         encoding = self.tokenizer.encode_plus(
-#             statements,
-#             add_special_tokens=True,
-#             truncation=True,
-#             max_length=self.max_len,
-#             return_token_type_ids=False,
-#             padding='max_length',
-#             return_attention_mask=True,
-#             return_tensors='pt',
-#         )
-#
-#         return {
-#             'input_ids': encoding['input_ids'].flatten(),
-#             'attention_mask': encoding['attention_mask'].flatten(),
-#             'labels': torch.tensor(labels, dtype=torch.long)
-#         }
-
-
-class ErnieCovidDataset(Dataset):
-
-    def __init__(self, statements, labels, tokenizer, max_len):
-        self.statements = statements
-        self.labels = labels
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-
-    def __len__(self):
-        return len(self.statements)
-
-    def __getitem__(self, item):
-        statements = str(self.statements[item])
-        labels = self.labels[item]
-        return CovidDataProcessor.convert_to_ernie_features(statements, labels, self.max_len, self.tokenizer)
+    def __init__(self, input_ids, input_mask, segment_ids, input_ent, ent_mask, label_id):
+        self.input_ids = input_ids
+        self.input_mask = input_mask
+        self.segment_ids = segment_ids
+        self.label_id = label_id
+        self.input_ent = input_ent
+        self.ent_mask = ent_mask
 
 
 class CovidDataProcessor:
@@ -68,13 +26,11 @@ class CovidDataProcessor:
     TEST_PATH = Path(__file__).parent / "../data/covid/covid_test_with_label.tsv"
     VAL_PATH = Path(__file__).parent / "../data/covid/covid_valid.tsv"
 
-    state_dict = {}
-
     @staticmethod
     def load_dataset():
-        train_df = pd.read_csv(CovidDataProcessor.TRAIN_PATH, sep="\t", header=None)[:100]
-        test_df = pd.read_csv(CovidDataProcessor.TEST_PATH, sep="\t", header=None)[:10]
-        val_df = pd.read_csv(CovidDataProcessor.VAL_PATH, sep="\t", header=None)[:10]
+        train_df = pd.read_csv(CovidDataProcessor.TRAIN_PATH, sep="\t", header=None)[:]
+        test_df = pd.read_csv(CovidDataProcessor.TEST_PATH, sep="\t", header=None)[:]
+        val_df = pd.read_csv(CovidDataProcessor.VAL_PATH, sep="\t", header=None)[:]
 
         # Fill nan (empty boxes) with -1
         train_df = train_df.fillna(-1)
@@ -113,48 +69,25 @@ class CovidDataProcessor:
                     print('Incorrect label')
         return encoded_labels
 
-    # @staticmethod
-    # def create_dataloader(statements, labels, tokenizer, max_len, batch_size):
-    #     dataset = CovidDataset(
-    #         statements=statements,
-    #         labels=labels,
-    #         tokenizer=tokenizer,
-    #         max_len=max_len
-    #     )
-    #
-    #     return DataLoader(
-    #         dataset,
-    #         batch_size=batch_size,
-    #         num_workers=4
-    #     )
+    @staticmethod
+    def get_ernie_dataloader(statements, labels, max_len, tokenizer, bath_size, entity2id, ent_map):
+        features = CovidDataProcessor.convert_to_ernie_features(statements, labels, max_len, tokenizer, entity2id,
+                                                                ent_map)
+
+        all_input_ids = torch.tensor([feature.input_ids for feature in features], dtype=torch.long)
+        all_input_mask = torch.tensor([feature.input_mask for feature in features], dtype=torch.long)
+        all_segment_ids = torch.tensor([feature.segment_ids for feature in features], dtype=torch.long)
+        all_label_ids = torch.tensor([feature.label_id for feature in features], dtype=torch.long)
+        all_ent = torch.tensor([feature.input_ent for feature in features], dtype=torch.long)
+        all_ent_masks = torch.tensor([feature.ent_mask for feature in features], dtype=torch.long)
+        data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_ent, all_ent_masks, all_label_ids)
+
+        return DataLoader(data, batch_size=bath_size, num_workers=4)
 
     @staticmethod
-    def create_ernie_dataloader(statements, labels, tokenizer, max_len, batch_size):
-        dataset = ErnieCovidDataset(
-            statements=statements,
-            labels=labels,
-            tokenizer=tokenizer,
-            max_len=max_len
-        )
-
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            num_workers=4
-        )
-
-    @staticmethod
-    def convert_to_ernie_features(statement, label, max_seq_length, tokenizer):
+    def convert_to_ernie_features(statements, labels, max_seq_length, tokenizer, entity2id, ent_map):
         # Set the authorization token for subsequent calls.
         tagme.GCUBE_TOKEN = "c8623405-ea8c-4c06-8394-ef7550483f75-843339462"
-        statement_ann = tagme.annotate(statement)
-
-        # Read entity map
-        ent_map = {}
-        with open(KG_EMBED_PATH + "/entity_map.txt") as fin:
-            for line in fin:
-                name, qid = line.strip().split("\t")
-                ent_map[name] = qid
 
         def get_ents(ann):
             ents = []
@@ -165,66 +98,59 @@ class CovidDataProcessor:
                 ents.append([ent_map[a.entity_title], a.begin, a.end, a.score])
             return ents
 
-        ents_statement = get_ents(statement_ann)
+        features = []
+        for statement, label in zip(statements, labels):
+            statement_ann = tagme.annotate(statement)
+            ents_statement = get_ents(statement_ann)
 
-        # Tokenize
-        tokens_statement, entities_statement = tokenizer.tokenize(statement, ents_statement)
+            # Tokenize
+            tokens_statement, entities_statement = tokenizer.tokenize(statement, ents_statement)
 
-        # Account for [CLS] and [SEP] with "- 2"
-        if len(tokens_statement) > max_seq_length - 2:
-            tokens_statement = tokens_statement[:(max_seq_length - 2)]
-            entities_statement = entities_statement[:(max_seq_length - 2)]
+            # Account for [CLS] and [SEP] with "- 2"
+            if len(tokens_statement) > max_seq_length - 2:
+                tokens_statement = tokens_statement[:(max_seq_length - 2)]
+                entities_statement = entities_statement[:(max_seq_length - 2)]
 
-        tokens = ["[CLS]"] + tokens_statement + ["[SEP]"]
-        ents = ["UNK"] + entities_statement + ["UNK"]
-        segment_ids = [0] * len(tokens)
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+            tokens = ["[CLS]"] + tokens_statement + ["[SEP]"]
+            ents = ["UNK"] + entities_statement + ["UNK"]
+            segment_ids = [0] * len(tokens)
+            input_ids = tokenizer.convert_tokens_to_ids(tokens)
+            input_ent = []
+            ent_mask = []
 
-        # Convert ents
-        entity2id = {}
-        with open(KG_EMBED_PATH + "/entity2id.txt") as fin:
-            fin.readline()
-            for line in fin:
-                qid, eid = line.strip().split('\t')
-                entity2id[qid] = int(eid)
+            for ent in ents:
+                if ent != "UNK" and ent in entity2id:
+                    input_ent.append(entity2id[ent])
+                    ent_mask.append(1)
+                else:
+                    input_ent.append(-1)
+                    ent_mask.append(0)
+            ent_mask[0] = 1
 
-        input_ent = []
-        ent_mask = []
+            # The mask has 1 for real tokens and 0 for padding tokens. Only real tokens are attended to.
+            input_mask = [1] * len(input_ids)
 
-        for ent in ents:
-            if ent != "UNK" and ent in entity2id:
-                input_ent.append(entity2id[ent])
-                ent_mask.append(1)
-            else:
-                input_ent.append(-1)
-                ent_mask.append(0)
-        ent_mask[0] = 1
+            # Zero-pad up to the sequence length.
+            padding = [0] * (max_seq_length - len(input_ids))
+            padding_ = [-1] * (max_seq_length - len(input_ids))
+            input_ids += padding
+            input_mask += padding
+            segment_ids += padding
+            input_ent += padding_
+            ent_mask += padding
 
-        # The mask has 1 for real tokens and 0 for padding tokens. Only real tokens are attended to.
-        input_mask = [1] * len(input_ids)
+            assert len(input_ids) == max_seq_length
+            assert len(input_mask) == max_seq_length
+            assert len(segment_ids) == max_seq_length
+            assert len(input_ent) == max_seq_length
+            assert len(ent_mask) == max_seq_length
 
-        # Zero-pad up to the sequence length.
-        padding = [0] * (max_seq_length - len(input_ids))
-        padding_ = [-1] * (max_seq_length - len(input_ids))
-        input_ids += padding
-        input_mask += padding
-        segment_ids += padding
-        input_ent += padding_
-        ent_mask += padding
+            features.append(
+                InputFeatures(input_ids=input_ids,
+                              input_mask=input_mask,
+                              segment_ids=segment_ids,
+                              input_ent=input_ent,
+                              ent_mask=ent_mask,
+                              label_id=label))
 
-        assert len(input_ids) == max_seq_length
-        assert len(input_mask) == max_seq_length
-        assert len(segment_ids) == max_seq_length
-        assert len(input_ent) == max_seq_length
-        assert len(ent_mask) == max_seq_length
-
-        input_ent_tensor = torch.tensor([input_ent]) + 1
-        input_ent = embed(input_ent_tensor)
-
-        features = {'input_ids': torch.tensor(input_ids, dtype=torch.long),
-                    'input_mask': torch.tensor(input_mask, dtype=torch.long),
-                    'segment_ids': torch.tensor(segment_ids, dtype=torch.long),
-                    'input_ent': input_ent.half().type(torch.LongTensor),
-                    'ent_mask': torch.tensor(ent_mask, dtype=torch.long),
-                    'labels': torch.tensor(label, dtype=torch.long)}
         return features
