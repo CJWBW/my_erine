@@ -969,7 +969,6 @@ class BertForNextSentencePrediction(PreTrainedBertModel):
             return seq_relationship_score
 
 
-
 class BertForEntityTyping(PreTrainedBertModel):
     def __init__(self, config, num_labels=2):
         super(BertForEntityTyping, self).__init__(config)
@@ -990,6 +989,7 @@ class BertForEntityTyping(PreTrainedBertModel):
             return loss
         else:
             return logits
+
 
 class BertForSTSB(PreTrainedBertModel):
     def __init__(self, config, num_labels=2):
@@ -1078,12 +1078,12 @@ class BertForSequenceClassification(PreTrainedBertModel):
         pooled_output = self.dropout(pooled_output)
         logits = self.classifier(pooled_output)
 
-        # if labels is not None:
-        #     loss_fct = CrossEntropyLoss()
-        #     loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-        #     return loss
-        # else:
-        return logits
+        if labels is not None:
+            loss_fct = CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            return loss
+        else:
+            return logits
 
 
 

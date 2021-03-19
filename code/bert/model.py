@@ -5,18 +5,26 @@ import torch.nn as nn
 import numpy as np
 import time
 from tqdm import tqdm
+from knowledge_bert.optimization import BertAdam
 
 
 class ErnieModel:
 
     @staticmethod
-    def train_epoch(model, optimizer, scheduler, train_dataloader, n_examples, device, loss_fn, embed):
+    def warmup_linear(x, warmup=0.002):
+        if x < warmup:
+            return x / warmup
+        return 1.0
+
+    @staticmethod
+    def train_epoch(model, optimizer, train_dataloader, device, embed, t_total):
 
         model.train()
 
-        # Store the average loss after each epoch so we can plot them.
-        losses = []
-        correct_predictions = 0
+        global_step = 0
+
+        tr_loss = 0
+        nb_tr_examples, nb_tr_steps = 0, 0
 
         for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
 
@@ -24,7 +32,7 @@ class ErnieModel:
             input_ids, input_mask, segment_ids, input_ent, ent_mask, labels = batch
             input_ent = embed(input_ent + 1).to(device)  # -1 -> 0
 
-            outputs = model(
+            loss = model(
                 input_ids=input_ids,
                 token_type_ids=segment_ids,
                 attention_mask=input_mask,
@@ -32,33 +40,41 @@ class ErnieModel:
                 ent_mask=ent_mask,
                 labels=labels
             )
-
-            _, pred = torch.max(outputs, dim=1)
-            loss = loss_fn(outputs.view(-1, 2), labels.view(-1))
-            # loss = loss_fn(outputs, labels)
-            correct_predictions += torch.sum(pred == labels)
-            losses.append(loss.item())
-
-            model.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            scheduler.step()
+            tr_loss += loss.item()
+            nb_tr_examples += input_ids.size(0)
+            nb_tr_steps += 1
 
-        return correct_predictions.double() / n_examples, np.mean(losses)
+            if (step + 1) % 1 == 0:
+                # modify learning rate with special warm up BERT uses
+                lr_this_step = 2e-5 * ErnieModel.warmup_linear(global_step / t_total, 0.1)
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = lr_this_step
+                optimizer.step()
+                optimizer.zero_grad()
+                global_step += 1
 
     @staticmethod
-    def train_model(model, train_dataloader, validation_dataloader, train_len, validation_len, epochs, device, loss_fn,
+    def train_model(model, train_dataloader, validation_dataloader, epochs, device, loss_fn,
                     embed):
-        optimizer = AdamW(model.parameters(), lr=1e-5, correct_bias=False)
+
+        # Prepare optimizer
+        param_optimizer = list(model.named_parameters())
+        no_grad = ['bert.encoder.layer.11.output.dense_ent', 'bert.encoder.layer.11.output.LayerNorm_ent']
+        param_optimizer = [(n, p) for n, p in param_optimizer if not any(nd in n for nd in no_grad)]
+        no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+        optimizer_grouped_parameters = [
+            {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+            {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+        ]
 
         # Total number of training steps is number of batches * number of epochs.
         total_steps = len(train_dataloader) * epochs
 
-        # Create the learning rate scheduler.
-        scheduler = get_linear_schedule_with_warmup(optimizer,
-                                                    num_warmup_steps=0,  # Default value in run_glue.py
-                                                    num_training_steps=total_steps)
+        optimizer = BertAdam(optimizer_grouped_parameters,
+                             lr=2e-5,
+                             warmup=0.1,
+                             t_total=total_steps)
 
         # Measure the total training time for the whole run.
         total_t0 = time.time()
@@ -80,10 +96,8 @@ class ErnieModel:
             # Measure how long the training epoch takes.
             t0 = time.time()
 
-            train_acc, train_loss = ErnieModel.train_epoch(model, optimizer, scheduler, train_dataloader, train_len,
-                                                           device, loss_fn, embed)
+            ErnieModel.train_epoch(model, optimizer, train_dataloader, device, embed, total_steps)
 
-            print('Train loss: {:}, accuracy: {:}'.format(train_loss, train_acc))
             print('Epoch {:} took {:} minutes'.format(epoch + 1, (time.time() - t0) / 60))
 
             # ========================================
@@ -93,13 +107,10 @@ class ErnieModel:
             print('')
             print("Running Validation...")
 
-            val_acc, val_loss = ErnieModel.eval_model(model, validation_dataloader, validation_len, device, loss_fn,
-                                                      embed)
+            val_acc, val_loss = ErnieModel.eval_model(model, validation_dataloader, device, embed)
             print('Validation loss: {:}, accuracy: {:}'.format(val_loss, val_acc))
             print('')
 
-            history['train_acc'].append(train_acc)
-            history['train_loss'].append(train_loss)
             history['val_acc'].append(val_acc)
             history['val_loss'].append(val_loss)
 
@@ -113,65 +124,62 @@ class ErnieModel:
         return history
 
     @staticmethod
-    def eval_model(model, validation_dataloader, n_examples, device, loss_fn, embed):
+    def accuracy(out, label):
+        outputs = np.argmax(out, axis=1)
+        return np.sum(outputs == label), outputs
+
+    @staticmethod
+    def eval_model(model, validation_dataloader, device, embed):
         model.eval()
 
-        losses = []
-        correct_predictions = 0
+        eval_loss, eval_accuracy = 0, 0
+        nb_eval_steps, nb_eval_examples = 0, 0
 
-        with torch.no_grad():
+        for batch in validation_dataloader:
 
-            for step, batch in enumerate(tqdm(validation_dataloader, desc="Iteration")):
+            batch = tuple(t.to(device) if i != 3 else t for i, t in enumerate(batch))
+            input_ids, input_mask, segment_ids, input_ent, ent_mask, labels = batch
+            input_ent = embed(input_ent + 1).to(device)  # -1 -> 0
 
-                batch = tuple(t.to(device) if i != 3 else t for i, t in enumerate(batch))
-                input_ids, input_mask, segment_ids, input_ent, ent_mask, labels = batch
-                input_ent = embed(input_ent + 1).to(device)  # -1 -> 0
+            with torch.no_grad():
+                tmp_eval_loss = model(input_ids, segment_ids, input_mask, input_ent, ent_mask, labels)
+                logits = model(input_ids, segment_ids, input_mask, input_ent, ent_mask)
 
-                outputs = model(
-                    input_ids=input_ids,
-                    token_type_ids=segment_ids,
-                    attention_mask=input_mask,
-                    input_ent=input_ent.half(),
-                    ent_mask=ent_mask,
-                    labels=labels
-                )
+            logits = logits.detach().cpu().numpy()
+            labels = labels.to('cpu').numpy()
+            tmp_eval_accuracy, pred = ErnieModel.accuracy(logits, labels)
 
-                _, pred = torch.max(outputs, dim=1)
-                loss = loss_fn(outputs, labels)
+            eval_loss += tmp_eval_loss.mean().item()
+            eval_accuracy += tmp_eval_accuracy
 
-                correct_predictions += torch.sum(pred == labels)
-                losses.append(loss.item())
+            nb_eval_examples += input_ids.size(0)
+            nb_eval_steps += 1
 
-        return correct_predictions.double() / n_examples, np.mean(losses)
+        eval_loss = eval_loss / nb_eval_steps
+        eval_accuracy = eval_accuracy / nb_eval_examples
+
+        return eval_accuracy, eval_loss
 
     @staticmethod
     def get_predictions(model, test_dataloader, device, embed):
         model.eval()
-
-        # Tracking variables
         predictions, true_labels = [], []
-        with torch.no_grad():
-            # Predict
-            for step, batch in enumerate(tqdm(test_dataloader, desc="Iteration")):
 
-                batch = tuple(t.to(device) if i != 3 else t for i, t in enumerate(batch))
-                input_ids, input_mask, segment_ids, input_ent, ent_mask, labels = batch
-                input_ent = embed(input_ent + 1).to(device)  # -1 -> 0
+        for step, batch in enumerate(tqdm(test_dataloader, desc="Iteration")):
 
-                outputs = model(
-                    input_ids=input_ids,
-                    token_type_ids=segment_ids,
-                    attention_mask=input_mask,
-                    input_ent=input_ent.half(),
-                    ent_mask=ent_mask
-                )
+            batch = tuple(t.to(device) if i != 3 else t for i, t in enumerate(batch))
+            input_ids, input_mask, segment_ids, input_ent, ent_mask, labels = batch
+            input_ent = embed(input_ent + 1).to(device)  # -1 -> 0
 
-                _, pred = torch.max(outputs, dim=1)
+            with torch.no_grad():
+                logits = model(input_ids, segment_ids, input_mask, input_ent, ent_mask)
 
-                # Store predictions and true labels
-                predictions.extend(pred)
-                true_labels.extend(labels)
+            logits = logits.detach().cpu().numpy()
+            labels = labels.to('cpu').numpy()
+            _, pred = ErnieModel.accuracy(logits, labels)
+            predictions.extend(pred)
+            true_labels.extend(labels)
 
-        predictions = torch.stack(predictions).cpu()
-        true_labels = torch.stack(true_labels).cpu()
         return predictions, true_labels
+
+
